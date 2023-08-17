@@ -1,11 +1,23 @@
 package rmq
 
+import "github.com/google/uuid"
+
 type Message struct {
 	queue        string
 	id           string
 	payload      string
 	receiveCount int
-	firstReceive int64
+	firstReceive int
+}
+
+func NewMessage(payload, queue string, receiveCount, firstReceive int) Message {
+	return Message{
+		id:           uuid.NewString(),
+		payload:      payload,
+		queue:        queue,
+		receiveCount: receiveCount,
+		firstReceive: firstReceive,
+	}
 }
 
 func (m Message) GetQueue() string {

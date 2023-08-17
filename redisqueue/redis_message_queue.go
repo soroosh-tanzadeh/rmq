@@ -11,11 +11,16 @@ import (
 
 type RedisMessageQueue struct {
 	client         *redis.Client
-	queue          string
-	prefix         string
 	delay          int
 	visibilityTime int
 	realTime       bool
+
+	queue        string
+	prefix       string
+	queueHashKey string
+	queueKey     string
+	listKey      string
+	channelKey   string
 
 	initiated          bool
 	receiveMessageSha1 string
@@ -25,7 +30,10 @@ func NewRedisMessageQueue(redisClient *redis.Client, prefix, queue string, visib
 	rmq := &RedisMessageQueue{
 		client:         redisClient,
 		queue:          queue,
-		prefix:         prefix + ":",
+		queueHashKey:   prefix + ":" + queue + ":Q",
+		queueKey:       prefix + ":" + queue,
+		listKey:        prefix + ":" + "QUEUES",
+		channelKey:     prefix + ":" + queue + "rt:$" + queue,
 		delay:          delay,
 		visibilityTime: visibilityTime,
 		realTime:       realTime,
@@ -34,7 +42,7 @@ func NewRedisMessageQueue(redisClient *redis.Client, prefix, queue string, visib
 	return rmq
 }
 
-func (rmq *RedisMessageQueue) Init(ctx context.Context) error {
+func (r *RedisMessageQueue) Init(ctx context.Context) error {
 	var err error
 	receiveMessageScript := `local msg = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", KEYS[2], "LIMIT", "0", "1")
 	if #msg == 0 then
@@ -54,23 +62,21 @@ func (rmq *RedisMessageQueue) Init(ctx context.Context) error {
 	end
 	return o`
 
-	if rmq.receiveMessageSha1, err = rmq.client.ScriptLoad(ctx, receiveMessageScript).Result(); err != nil {
+	if r.receiveMessageSha1, err = r.client.ScriptLoad(ctx, receiveMessageScript).Result(); err != nil {
 		return err
 	}
 
-	createTime, err := rmq.client.Time(ctx).Result()
+	createTime, err := r.client.Time(ctx).Result()
 	if err != nil {
 		return err
 	}
 
-	result, err := rmq.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		queueKey := rmq.prefix + rmq.queue + ":Q"
-
-		p.HSetNX(ctx, queueKey, "vt", strconv.Itoa(rmq.visibilityTime))
-		p.HSetNX(ctx, queueKey, "delay", strconv.Itoa(rmq.delay))
-		p.HSetNX(ctx, queueKey, "created", fmt.Sprintf("%d", createTime.Unix()))
-		p.HSetNX(ctx, queueKey, "modified", fmt.Sprintf("%d", createTime.Unix()))
-		p.SAdd(ctx, rmq.prefix+"QUEUES", rmq.queue)
+	result, err := r.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.HSetNX(ctx, r.queueHashKey, "vt", strconv.Itoa(r.visibilityTime))
+		p.HSetNX(ctx, r.queueHashKey, "delay", strconv.Itoa(r.delay))
+		p.HSetNX(ctx, r.queueHashKey, "created", fmt.Sprintf("%d", createTime.Unix()))
+		p.HSetNX(ctx, r.queueHashKey, "modified", fmt.Sprintf("%d", createTime.Unix()))
+		p.SAdd(ctx, r.listKey, r.queue)
 		return nil
 	})
 	if err != nil {
@@ -80,18 +86,41 @@ func (rmq *RedisMessageQueue) Init(ctx context.Context) error {
 		return nil
 	}
 
-	rmq.initiated = true
+	r.initiated = true
 	return nil
 }
 
-func (rmq *RedisMessageQueue) Push(ctx context.Context, payload string) error {
+func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, error) {
+	message := rmq.NewMessage(payload, r.queue, 0, 0)
+
+	timestamp, err := r.client.Time(ctx).Result()
+	if err != nil {
+		return "", err
+	}
+	txResult, err := r.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.ZAdd(ctx, r.queueKey, redis.Z{Score: float64(timestamp.UnixMicro() + int64(r.delay*1e+6)), Member: message.GetId()})
+		p.HSet(ctx, r.queueHashKey, message.GetId(), message.GetPayload())
+		p.HIncrBy(ctx, r.queueHashKey, "totalsent", 1)
+
+		if r.realTime {
+			p.ZCard(ctx, r.queueKey)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	if r.realTime {
+		r.client.Publish(ctx, r.channelKey, txResult[3].String())
+	}
+	return message.GetId(), nil
+}
+
+func (r *RedisMessageQueue) Receive(ctx context.Context) (rmq.Message, error) {
 	panic("not implemented") // TODO: Implement
 }
 
-func (rmq *RedisMessageQueue) Receive(ctx context.Context) (rmq.Message, error) {
-	panic("not implemented") // TODO: Implement
-}
-
-func (rmq *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
+func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
 	panic("not implemented") // TODO: Implement
 }
