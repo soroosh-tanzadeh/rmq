@@ -130,6 +130,9 @@ func (r *RedisMessageQueue) Receive(ctx context.Context) (rmq.Message, error) {
 		return rmq.Message{}, err
 	}
 	resp := result.([]interface{})
+	if len(resp) == 0 {
+		return rmq.Message{}, NoNewMessage
+	}
 
 	msgId := resp[0].(string)
 	payload := resp[1].(string)
@@ -142,5 +145,19 @@ func (r *RedisMessageQueue) Receive(ctx context.Context) (rmq.Message, error) {
 }
 
 func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
-	panic("not implemented") // TODO: Implement
+
+	resp, err := r.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
+		p.ZRem(ctx, r.queueKey)
+		p.HDel(ctx, r.queueHashKey, messageId, messageId+":ir", messageId+":fr")
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if resp[0].Err() != nil || resp[1].Err() != nil {
+		return MessageNotFound
+	}
+
+	return nil
 }
