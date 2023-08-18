@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"github.com/soroosh-tanzadeh/rmq"
 )
@@ -16,7 +18,6 @@ type RedisMessageQueue struct {
 	realTime       bool
 
 	queue        string
-	prefix       string
 	queueHashKey string
 	queueKey     string
 	listKey      string
@@ -91,7 +92,7 @@ func (r *RedisMessageQueue) Init(ctx context.Context) error {
 }
 
 func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, error) {
-	message := rmq.NewMessage(payload, r.queue, 0, 0)
+	message := rmq.NewMessage(uuid.NewString(), payload, r.queue, 0, 0)
 
 	timestamp, err := r.client.Time(ctx).Result()
 	if err != nil {
@@ -118,7 +119,26 @@ func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, e
 }
 
 func (r *RedisMessageQueue) Receive(ctx context.Context) (rmq.Message, error) {
-	panic("not implemented") // TODO: Implement
+	timestamp, err := r.client.Time(ctx).Result()
+	if err != nil {
+		return rmq.Message{}, err
+	}
+	invisibleUntil := timestamp.Add(time.Second * time.Duration(r.visibilityTime))
+
+	result, err := r.client.EvalSha(ctx, r.receiveMessageSha1, []string{r.queueKey, fmt.Sprintf("%d", timestamp.UnixMicro()), fmt.Sprintf("%d", invisibleUntil.UnixMicro())}, 3).Result()
+	if err != nil {
+		return rmq.Message{}, err
+	}
+	resp := result.([]interface{})
+
+	msgId := resp[0].(string)
+	payload := resp[1].(string)
+	rc := resp[2].(int64)
+	fr, err := strconv.ParseInt(resp[3].(string), 10, 64)
+	if err != nil {
+		return rmq.Message{}, err
+	}
+	return rmq.NewMessage(msgId, payload, r.queue, rc, fr), err
 }
 
 func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
