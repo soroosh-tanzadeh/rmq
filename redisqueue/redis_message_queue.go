@@ -27,8 +27,10 @@ type RedisMessageQueue struct {
 	receiveMessageSha1 string
 }
 
+type ConsumeFunc func(message rmq.Message)
+
 func NewRedisMessageQueue(redisClient *redis.Client, prefix, queue string, visibilityTime, delay int, realTime bool) *RedisMessageQueue {
-	rmq := &RedisMessageQueue{
+	return &RedisMessageQueue{
 		client:         redisClient,
 		queue:          queue,
 		queueHashKey:   prefix + ":" + queue + ":Q",
@@ -40,7 +42,6 @@ func NewRedisMessageQueue(redisClient *redis.Client, prefix, queue string, visib
 		realTime:       realTime,
 		initiated:      false,
 	}
-	return rmq
 }
 
 func (r *RedisMessageQueue) Init(ctx context.Context) error {
@@ -92,6 +93,10 @@ func (r *RedisMessageQueue) Init(ctx context.Context) error {
 }
 
 func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, error) {
+	if !r.initiated {
+		return "", NotInitialized
+	}
+
 	message := rmq.NewMessage(uuid.NewString(), payload, r.queue, 0, 0)
 
 	timestamp, err := r.client.Time(ctx).Result()
@@ -113,12 +118,17 @@ func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, e
 	}
 
 	if r.realTime {
-		r.client.Publish(ctx, r.channelKey, txResult[3].String())
+		msg := txResult[3].(*redis.IntCmd)
+		r.client.Publish(ctx, r.channelKey, msg.Val())
 	}
 	return message.GetId(), nil
 }
 
 func (r *RedisMessageQueue) Receive(ctx context.Context) (rmq.Message, error) {
+	if !r.initiated {
+		return rmq.Message{}, NotInitialized
+	}
+
 	timestamp, err := r.client.Time(ctx).Result()
 	if err != nil {
 		return rmq.Message{}, err
@@ -144,7 +154,32 @@ func (r *RedisMessageQueue) Receive(ctx context.Context) (rmq.Message, error) {
 	return rmq.NewMessage(msgId, payload, r.queue, rc, fr), err
 }
 
+func (r *RedisMessageQueue) Consume(ctx context.Context, consumer ConsumeFunc) error {
+	channel := r.client.Subscribe(ctx, r.channelKey).Channel()
+	for message := range channel {
+		cardinality, err := strconv.Atoi(message.Payload)
+		if err != nil {
+			return err
+		}
+		if cardinality > 0 {
+			for i := 0; i < cardinality; i++ {
+				msg, err := r.Receive(ctx)
+				if err != nil && err != NoNewMessage {
+					return err
+				} else if err == NoNewMessage {
+					break
+				}
+				consumer(msg)
+			}
+		}
+	}
+	return nil
+}
+
 func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
+	if !r.initiated {
+		return NotInitialized
+	}
 
 	resp, err := r.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		p.ZRem(ctx, r.queueKey)

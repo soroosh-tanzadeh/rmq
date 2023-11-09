@@ -80,7 +80,7 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ShouldPushMessageToQueue() {
 	s.Require().Nil(err)
 	s.Assert().Contains(q, messageId)
 	s.Assert().Equal(payload, q[messageId], "invalid message payload")
-	receiveCMD, _ := s.redisClient.ZRangeByScore(s.ctx, "prefix:queue", &redis.ZRangeBy{Min: "-inf", Max: fmt.Sprintf("%d", time.Now().UnixMicro()), Count: 1, Offset: 0}).Result()
+	receiveCMD, _ := s.redisClient.ZRangeByScore(s.ctx, "prefix:queue", &redis.ZRangeBy{Min: "-inf", Max: fmt.Sprintf("%d", time.Now().UnixNano()), Count: 1, Offset: 0}).Result()
 	s.Assert().Equal(messageId, receiveCMD[0], "invalid message id in queue")
 	s.Assert().Equal("1", q["totalsent"])
 	s.Assert().True(time.UnixMicro(int64(s.redisClient.ZPopMax(s.ctx, "prefix:queue", 1).Val()[0].Score)).Before(time.Now()), "invalid message timestamp in queue")
@@ -108,7 +108,7 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMakeMessageInvisibleAfterRe
 	err := queue.Init(s.ctx)
 	s.Require().Nil(err)
 	payload := "Hello World with random time:" + fmt.Sprintf("%d", time.Now().Unix())
-	queue.Push(s.ctx, payload)
+	_, err = queue.Push(s.ctx, payload)
 	s.Require().Nil(err)
 	msg, err := queue.Receive(s.ctx)
 	s.Require().NotNil(msg)
@@ -117,6 +117,75 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMakeMessageInvisibleAfterRe
 	m, err := queue.Receive(s.ctx)
 	s.Equal(rmq.Message{}, m)
 	s.Require().Equal(NoNewMessage, err)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessage() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+	err := queue.Init(s.ctx)
+	s.Require().Nil(err)
+
+	messageChannel := make(chan rmq.Message)
+	go func() {
+		err := queue.Consume(s.ctx, func(message rmq.Message) {
+			messageChannel <- message
+		})
+		if err != nil {
+			s.Error(err)
+		}
+	}()
+	time.Sleep(time.Second)
+
+	payload := "Hello World with random time:" + fmt.Sprintf("%d", time.Now().Unix())
+	_, err = queue.Push(s.ctx, payload)
+	s.Require().Nil(err)
+
+	timeout, cancel := context.WithTimeout(s.ctx, time.Second)
+	select {
+	case msg := <-messageChannel:
+		s.Assert().Equal(payload, msg.GetPayload())
+		cancel()
+	case <-timeout.Done():
+		s.Fail("Message Not received")
+		cancel()
+	}
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessageShouldReceiveMultipleMessages() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+	err := queue.Init(s.ctx)
+	s.Require().Nil(err)
+
+	messageChannel := make(chan rmq.Message)
+	go func() {
+		err := queue.Consume(s.ctx, func(message rmq.Message) {
+			messageChannel <- message
+		})
+		if err != nil {
+			s.Error(err)
+		}
+	}()
+	time.Sleep(time.Second)
+
+	msgCount := 100
+	payloads := []string{}
+	for i := 0; i < msgCount; i++ {
+		payload := "Hello World with random time:" + fmt.Sprintf("%d : %d", i, time.Now().Unix())
+		_, err = queue.Push(s.ctx, payload)
+		payloads = append(payloads, payload)
+		s.Require().Nil(err)
+	}
+
+	for i := 0; i < msgCount; i++ {
+		timeout, cancel := context.WithTimeout(s.ctx, 10*time.Millisecond)
+		select {
+		case msg := <-messageChannel:
+			s.Assert().Equal(payloads[i], msg.GetPayload())
+			cancel()
+		case <-timeout.Done():
+			s.Fail("Message Not received")
+			cancel()
+		}
+	}
 }
 
 func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMultipleProcessShouldNotReadSameMessages() {
@@ -128,7 +197,8 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMultipleProcessShouldNotRea
 	go func() {
 		for i := 0; i < 100; i++ {
 			payload := "Hello World with random time:" + fmt.Sprintf("%d", time.Now().Unix())
-			queue.Push(s.ctx, payload)
+			_, err := queue.Push(s.ctx, payload)
+			s.Require().Nil(err)
 		}
 		pc <- true
 	}()
