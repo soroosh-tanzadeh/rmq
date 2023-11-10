@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"github.com/redis/go-redis/v9"
 	"github.com/soroosh-tanzadeh/rmq"
-	"github.com/soroosh-tanzadeh/rmq/redisqueue"
 )
 
 func main() {
@@ -19,7 +18,7 @@ func main() {
 	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:6379"})
 
 	visibilityTime := 100
-	queue := redisqueue.NewRedisMessageQueue(client, "prefix", "queue", visibilityTime, delayTime, true)
+	queue := rmq.NewRedisMessageQueue(client, "prefix", "queue", visibilityTime, delayTime, true)
 
 	// Initialize Message Queue
 	err := queue.Init(ctx)
