@@ -1,4 +1,4 @@
-package redisqueue
+package rmq
 
 // Basic imports
 import (
@@ -12,7 +12,6 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
-	"github.com/soroosh-tanzadeh/rmq"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -115,7 +114,7 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMakeMessageInvisibleAfterRe
 	s.Require().Nil(err)
 
 	m, err := queue.Receive(s.ctx)
-	s.Equal(rmq.Message{}, m)
+	s.Equal(Message{}, m)
 	s.Require().Equal(NoNewMessage, err)
 }
 
@@ -124,9 +123,9 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessage() {
 	err := queue.Init(s.ctx)
 	s.Require().Nil(err)
 
-	messageChannel := make(chan rmq.Message)
+	messageChannel := make(chan Message)
 	go func() {
-		err := queue.Consume(s.ctx, func(message rmq.Message) {
+		err := queue.Consume(s.ctx, func(message Message) {
 			messageChannel <- message
 		})
 		if err != nil {
@@ -155,9 +154,9 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessageShould
 	err := queue.Init(s.ctx)
 	s.Require().Nil(err)
 
-	messageChannel := make(chan rmq.Message)
+	messageChannel := make(chan Message)
 	go func() {
-		err := queue.Consume(s.ctx, func(message rmq.Message) {
+		err := queue.Consume(s.ctx, func(message Message) {
 			messageChannel <- message
 		})
 		if err != nil {

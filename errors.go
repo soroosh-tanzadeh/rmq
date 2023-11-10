@@ -1,4 +1,4 @@
-package redisqueue
+package rmq
 
 type NoNewMessageError string
 
