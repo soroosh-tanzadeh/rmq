@@ -2,6 +2,7 @@ package rmq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -83,7 +84,7 @@ func (r *RedisMessageQueue) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if result[0].Err() == redis.Nil {
+	if errors.Is(result[0].Err(), redis.Nil) {
 		return nil
 	}
 
@@ -91,6 +92,35 @@ func (r *RedisMessageQueue) Init(ctx context.Context) error {
 	return nil
 }
 
+func (r *RedisMessageQueue) GetMetrics(ctx context.Context) (map[string]interface{}, error) {
+	if !r.initiated {
+		return nil, NotInitialized
+	}
+
+	result, err := r.client.HMGet(ctx, r.queueHashKey, "totalsent", "totalrecv").Result()
+	if err != nil {
+		return nil, err
+	}
+	activeMessages, err := r.client.ZCard(ctx, r.queueKey).Result()
+	if err != nil {
+		return nil, err
+	}
+	totalSent, err := strconv.Atoi(result[0].(string))
+	if err != nil {
+		return nil, err
+	}
+	totalReceive, err := strconv.Atoi(result[1].(string))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"total_sent":      totalSent,
+		"total_receive":   totalReceive,
+		"active_messages": activeMessages,
+	}, nil
+}
+
+// Push to queue and returns message ID
 func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, error) {
 	if !r.initiated {
 		return "", NotInitialized
@@ -154,6 +184,10 @@ func (r *RedisMessageQueue) Receive(ctx context.Context) (Message, error) {
 }
 
 func (r *RedisMessageQueue) Consume(ctx context.Context, consumer ConsumeFunc) error {
+	if !r.initiated {
+		return NotInitialized
+	}
+
 	channel := r.client.Subscribe(ctx, r.channelKey).Channel()
 	for message := range channel {
 		cardinality, err := strconv.Atoi(message.Payload)
@@ -163,9 +197,9 @@ func (r *RedisMessageQueue) Consume(ctx context.Context, consumer ConsumeFunc) e
 		if cardinality > 0 {
 			for i := 0; i < cardinality; i++ {
 				msg, err := r.Receive(ctx)
-				if err != nil && err != NoNewMessage {
+				if err != nil && !errors.Is(err, NoNewMessage) {
 					return err
-				} else if err == NoNewMessage {
+				} else if errors.Is(err, NoNewMessage) {
 					break
 				}
 				consumer(msg)
@@ -181,7 +215,7 @@ func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
 	}
 
 	resp, err := r.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
-		p.ZRem(ctx, r.queueKey)
+		p.ZRem(ctx, r.queueKey, messageId)
 		p.HDel(ctx, r.queueHashKey, messageId, messageId+":ir", messageId+":fr")
 		return nil
 	})
@@ -189,7 +223,7 @@ func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
 		return err
 	}
 
-	if resp[0].Err() != nil || resp[1].Err() != nil {
+	if (resp[0].(*redis.IntCmd)).Val() == 0 || (resp[1].(*redis.IntCmd)).Val() == 0 {
 		return MessageNotFound
 	}
 
