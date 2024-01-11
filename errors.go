@@ -10,7 +10,7 @@ type MessageNotFoundError string
 
 func (e MessageNotFoundError) Error() string { return string(e) }
 
-const MessageNotFound = MessageNotFoundError("no new message")
+const MessageNotFound = MessageNotFoundError("message not found")
 
 type NotInitializedError string
 

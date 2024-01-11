@@ -149,7 +149,7 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessage() {
 	}
 }
 
-func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessageShouldReceiveMultipleMessages() {
+func (s *RedisMessageQueueTestSuite) Test_Consume_ShouldReceiveMultipleMessages() {
 	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
 	err := queue.Init(s.ctx)
 	s.Require().Nil(err)
@@ -158,6 +158,9 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessageShould
 	go func() {
 		err := queue.Consume(s.ctx, func(message Message) {
 			messageChannel <- message
+			if err := queue.Ack(s.ctx, message.GetId()); err != nil {
+				s.Error(err)
+			}
 		})
 		if err != nil {
 			s.Error(err)
@@ -187,7 +190,7 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessageShould
 	}
 }
 
-func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMultipleProcessShouldNotReadSameMessages() {
+func (s *RedisMessageQueueTestSuite) Test_Receive_ShouldMultipleProcessShouldNotReadSameMessages() {
 	runtime.GOMAXPROCS(10)
 	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
 	err := queue.Init(s.ctx)
@@ -237,4 +240,91 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMultipleProcessShouldNotRea
 	for _, msgId := range m2 {
 		s.Assert().NotContains(msgId, m1)
 	}
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Ack_ShouldReturnError_WhenMessageIDIsInvalid() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+	err := queue.Init(s.ctx)
+
+	err = queue.Ack(s.ctx, "invalidID")
+	s.Assert().ErrorIs(err, MessageNotFound)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Ack_ShouldRemoveMessageFromHSetAndZSet() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+	err := queue.Init(s.ctx)
+	msgID, err := queue.Push(s.ctx, "RandomPayload")
+	s.Require().Nil(err)
+
+	err = queue.Ack(s.ctx, msgID)
+
+	s.Require().Nil(err)
+	q, err := s.redisClient.HGetAll(s.ctx, "prefix:queue:Q").Result()
+	z, err := s.redisClient.ZPopMax(s.ctx, "prefix:queue").Result()
+	s.Require().Nil(err)
+	s.Assert().NotContains(q, msgID)
+	s.Assert().Len(z, 0)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Ack_NotWorkWhenQueueNotInitialized() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+
+	err := queue.Ack(s.ctx, "id")
+
+	s.Assert().ErrorIs(err, NotInitialized)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Push_NotWorkWhenQueueNotInitialized() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+
+	_, err := queue.Push(s.ctx, "PayLoad")
+
+	s.Assert().ErrorIs(err, NotInitialized)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Receive_NotWorkWhenQueueNotInitialized() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+
+	_, err := queue.Receive(s.ctx)
+
+	s.Assert().ErrorIs(err, NotInitialized)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_Consume_NotWorkWhenQueueNotInitialized() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+
+	err := queue.Consume(s.ctx, func(message Message) {})
+
+	s.Assert().ErrorIs(err, NotInitialized)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_GetMetrics_NotWorkWhenQueueNotInitialized() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+
+	_, err := queue.GetMetrics(s.ctx)
+
+	s.Assert().ErrorIs(err, NotInitialized)
+}
+
+func (s *RedisMessageQueueTestSuite) Test_GetMetrics() {
+	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
+	err := queue.Init(s.ctx)
+	s.Require().Nil(err)
+	var messages [10]string
+	for i := 0; i < 10; i++ {
+		if messages[i], err = queue.Push(s.ctx, "Message1"); err != nil {
+			s.Error(err)
+		}
+	}
+	_, err = queue.Receive(s.ctx)
+	s.Require().Nil(err)
+
+	err = queue.Ack(s.ctx, messages[9])
+	s.Require().Nil(err)
+
+	metrics, err := queue.GetMetrics(s.ctx)
+
+	s.Assert().Equal(10, metrics["total_sent"])
+	s.Assert().Equal(1, metrics["total_receive"])
+	s.Assert().Equal(int64(9), metrics["active_messages"])
 }
