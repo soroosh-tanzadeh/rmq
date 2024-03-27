@@ -27,7 +27,7 @@ type RedisMessageQueue struct {
 	receiveMessageSha1 string
 }
 
-type ConsumeFunc func(message Message)
+type ConsumeFunc func(message Message) error
 
 func NewRedisMessageQueue(redisClient *redis.Client, prefix, queue string, visibilityTime, delay int, realTime bool) *RedisMessageQueue {
 	return &RedisMessageQueue{
@@ -94,7 +94,7 @@ func (r *RedisMessageQueue) Init(ctx context.Context) error {
 
 func (r *RedisMessageQueue) GetMetrics(ctx context.Context) (map[string]interface{}, error) {
 	if !r.initiated {
-		return nil, NotInitialized
+		return nil, ErrNotInitialized
 	}
 
 	result, err := r.client.HMGet(ctx, r.queueHashKey, "totalsent", "totalrecv").Result()
@@ -123,7 +123,7 @@ func (r *RedisMessageQueue) GetMetrics(ctx context.Context) (map[string]interfac
 // Push to queue and returns message ID
 func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, error) {
 	if !r.initiated {
-		return "", NotInitialized
+		return "", ErrNotInitialized
 	}
 
 	message := NewMessage(uuid.NewString(), payload, r.queue, 0, 0)
@@ -155,7 +155,7 @@ func (r *RedisMessageQueue) Push(ctx context.Context, payload string) (string, e
 
 func (r *RedisMessageQueue) Receive(ctx context.Context) (Message, error) {
 	if !r.initiated {
-		return Message{}, NotInitialized
+		return Message{}, ErrNotInitialized
 	}
 
 	timestamp, err := r.client.Time(ctx).Result()
@@ -170,7 +170,7 @@ func (r *RedisMessageQueue) Receive(ctx context.Context) (Message, error) {
 	}
 	resp := result.([]interface{})
 	if len(resp) == 0 {
-		return Message{}, NoNewMessage
+		return Message{}, ErrNoNewMessage
 	}
 
 	msgId := resp[0].(string)
@@ -185,7 +185,7 @@ func (r *RedisMessageQueue) Receive(ctx context.Context) (Message, error) {
 
 func (r *RedisMessageQueue) Consume(ctx context.Context, consumer ConsumeFunc) error {
 	if !r.initiated {
-		return NotInitialized
+		return ErrNotInitialized
 	}
 
 	channel := r.client.Subscribe(ctx, r.channelKey).Channel()
@@ -197,9 +197,9 @@ func (r *RedisMessageQueue) Consume(ctx context.Context, consumer ConsumeFunc) e
 		if cardinality > 0 {
 			for i := 0; i < cardinality; i++ {
 				msg, err := r.Receive(ctx)
-				if err != nil && !errors.Is(err, NoNewMessage) {
+				if err != nil && !errors.Is(err, ErrNoNewMessage) {
 					return err
-				} else if errors.Is(err, NoNewMessage) {
+				} else if errors.Is(err, ErrNoNewMessage) {
 					break
 				}
 				consumer(msg)
@@ -211,7 +211,7 @@ func (r *RedisMessageQueue) Consume(ctx context.Context, consumer ConsumeFunc) e
 
 func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
 	if !r.initiated {
-		return NotInitialized
+		return ErrNotInitialized
 	}
 
 	resp, err := r.client.TxPipelined(ctx, func(p redis.Pipeliner) error {
@@ -224,7 +224,7 @@ func (r *RedisMessageQueue) Ack(ctx context.Context, messageId string) error {
 	}
 
 	if (resp[0].(*redis.IntCmd)).Val() == 0 || (resp[1].(*redis.IntCmd)).Val() == 0 {
-		return MessageNotFound
+		return ErrMessageNotFound
 	}
 
 	return nil
