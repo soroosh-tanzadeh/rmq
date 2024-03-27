@@ -115,7 +115,7 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ShouldMakeMessageInvisibleAfterRe
 
 	m, err := queue.Receive(s.ctx)
 	s.Equal(Message{}, m)
-	s.Require().Equal(NoNewMessage, err)
+	s.Require().Equal(ErrNoNewMessage, err)
 }
 
 func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessage() {
@@ -125,8 +125,9 @@ func (s *RedisMessageQueueTestSuite) Test_Push_ConsumeShouldReceiveMessage() {
 
 	messageChannel := make(chan Message)
 	go func() {
-		err := queue.Consume(s.ctx, func(message Message) {
+		err := queue.Consume(s.ctx, func(message Message) error {
 			messageChannel <- message
+			return nil
 		})
 		if err != nil {
 			s.Error(err)
@@ -156,11 +157,12 @@ func (s *RedisMessageQueueTestSuite) Test_Consume_ShouldReceiveMultipleMessages(
 
 	messageChannel := make(chan Message)
 	go func() {
-		err := queue.Consume(s.ctx, func(message Message) {
+		err := queue.Consume(s.ctx, func(message Message) error {
 			messageChannel <- message
 			if err := queue.Ack(s.ctx, message.GetId()); err != nil {
 				s.Error(err)
 			}
+			return nil
 		})
 		if err != nil {
 			s.Error(err)
@@ -214,7 +216,7 @@ func (s *RedisMessageQueueTestSuite) Test_Receive_ShouldMultipleProcessShouldNot
 		runtime.LockOSThread()
 		for i := 0; i < 100; i++ {
 			m, err := queue.Receive(s.ctx)
-			if err != NoNewMessage {
+			if err != ErrNoNewMessage {
 				m1 = append(m1, m.GetId())
 			}
 		}
@@ -224,7 +226,7 @@ func (s *RedisMessageQueueTestSuite) Test_Receive_ShouldMultipleProcessShouldNot
 		runtime.LockOSThread()
 		for i := 0; i < 100; i++ {
 			m, err := queue.Receive(s.ctx)
-			if err != NoNewMessage {
+			if err != ErrNoNewMessage {
 				m2 = append(m2, m.GetId())
 			}
 		}
@@ -245,14 +247,16 @@ func (s *RedisMessageQueueTestSuite) Test_Receive_ShouldMultipleProcessShouldNot
 func (s *RedisMessageQueueTestSuite) Test_Ack_ShouldReturnError_WhenMessageIDIsInvalid() {
 	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
 	err := queue.Init(s.ctx)
+	s.Assert().NoError(err)
 
 	err = queue.Ack(s.ctx, "invalidID")
-	s.Assert().ErrorIs(err, MessageNotFound)
+	s.Assert().ErrorIs(err, ErrMessageNotFound)
 }
 
 func (s *RedisMessageQueueTestSuite) Test_Ack_ShouldRemoveMessageFromHSetAndZSet() {
 	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
 	err := queue.Init(s.ctx)
+	s.Require().Nil(err)
 	msgID, err := queue.Push(s.ctx, "RandomPayload")
 	s.Require().Nil(err)
 
@@ -260,6 +264,7 @@ func (s *RedisMessageQueueTestSuite) Test_Ack_ShouldRemoveMessageFromHSetAndZSet
 
 	s.Require().Nil(err)
 	q, err := s.redisClient.HGetAll(s.ctx, "prefix:queue:Q").Result()
+	s.Require().Nil(err)
 	z, err := s.redisClient.ZPopMax(s.ctx, "prefix:queue").Result()
 	s.Require().Nil(err)
 	s.Assert().NotContains(q, msgID)
@@ -271,7 +276,7 @@ func (s *RedisMessageQueueTestSuite) Test_Ack_NotWorkWhenQueueNotInitialized() {
 
 	err := queue.Ack(s.ctx, "id")
 
-	s.Assert().ErrorIs(err, NotInitialized)
+	s.Assert().ErrorIs(err, ErrNotInitialized)
 }
 
 func (s *RedisMessageQueueTestSuite) Test_Push_NotWorkWhenQueueNotInitialized() {
@@ -279,7 +284,7 @@ func (s *RedisMessageQueueTestSuite) Test_Push_NotWorkWhenQueueNotInitialized() 
 
 	_, err := queue.Push(s.ctx, "PayLoad")
 
-	s.Assert().ErrorIs(err, NotInitialized)
+	s.Assert().ErrorIs(err, ErrNotInitialized)
 }
 
 func (s *RedisMessageQueueTestSuite) Test_Receive_NotWorkWhenQueueNotInitialized() {
@@ -287,15 +292,17 @@ func (s *RedisMessageQueueTestSuite) Test_Receive_NotWorkWhenQueueNotInitialized
 
 	_, err := queue.Receive(s.ctx)
 
-	s.Assert().ErrorIs(err, NotInitialized)
+	s.Assert().ErrorIs(err, ErrNotInitialized)
 }
 
 func (s *RedisMessageQueueTestSuite) Test_Consume_NotWorkWhenQueueNotInitialized() {
 	queue := NewRedisMessageQueue(s.redisClient, "prefix", "queue", 30, 0, true)
 
-	err := queue.Consume(s.ctx, func(message Message) {})
+	err := queue.Consume(s.ctx, func(message Message) error {
+		return nil
+	})
 
-	s.Assert().ErrorIs(err, NotInitialized)
+	s.Assert().ErrorIs(err, ErrNotInitialized)
 }
 
 func (s *RedisMessageQueueTestSuite) Test_GetMetrics_NotWorkWhenQueueNotInitialized() {
@@ -303,7 +310,7 @@ func (s *RedisMessageQueueTestSuite) Test_GetMetrics_NotWorkWhenQueueNotInitiali
 
 	_, err := queue.GetMetrics(s.ctx)
 
-	s.Assert().ErrorIs(err, NotInitialized)
+	s.Assert().ErrorIs(err, ErrNotInitialized)
 }
 
 func (s *RedisMessageQueueTestSuite) Test_GetMetrics() {
@@ -323,6 +330,7 @@ func (s *RedisMessageQueueTestSuite) Test_GetMetrics() {
 	s.Require().Nil(err)
 
 	metrics, err := queue.GetMetrics(s.ctx)
+	s.Require().Nil(err)
 
 	s.Assert().Equal(10, metrics["total_sent"])
 	s.Assert().Equal(1, metrics["total_receive"])
